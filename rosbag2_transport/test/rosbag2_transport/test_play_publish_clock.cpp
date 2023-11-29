@@ -77,6 +77,18 @@ public:
       });
     player->play();
 
+    sub_->add_subscription<test_msgs::msg::BasicTypes>("/topic1", messages.size());
+    sub_->add_subscription<rosgraph_msgs::msg::Clock>(
+      "/clock", expected_clock_messages_, rclcpp::ClockQoS());
+
+    ASSERT_TRUE(
+      sub_->spin_and_wait_for_matched(player->get_list_of_publishers(), std::chrono::seconds(30)));
+
+    auto await_received_messages = sub_->spin_subscriptions();
+
+    player->play();
+    player->wait_for_playback_to_finish();
+
     await_received_messages.get();
     exec.cancel();
     spin_thread.join();

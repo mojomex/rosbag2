@@ -166,8 +166,8 @@ TEST_F(RosBag2PlayTestFixture, test_keyboard_controls)
   keyboard_handler->simulate_key_press(play_options_.increase_rate_key);
   EXPECT_DOUBLE_EQ(player->get_rate(), 1.1);
 
-  // start play thread
-  std::thread player_thread = std::thread([player]() {player->play();});
+  // start playback asynchronously in a separate thread
+  player->play();
 
   // play next
   keyboard_handler->simulate_key_press(play_options_.play_next_key);
@@ -176,9 +176,7 @@ TEST_F(RosBag2PlayTestFixture, test_keyboard_controls)
   keyboard_handler->simulate_key_press(play_options_.pause_resume_toggle_key);
   EXPECT_THAT(player->is_paused(), false);
 
-  if (player_thread.joinable()) {
-    player_thread.join();
-  }
+  player->stop();
 
   EXPECT_THAT(player->num_paused, 1);
   EXPECT_THAT(player->num_resumed, 1);
