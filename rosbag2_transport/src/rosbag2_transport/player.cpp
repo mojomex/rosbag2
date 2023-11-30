@@ -93,23 +93,7 @@ Player::Player(
     node_name, node_options)
 {}
 
-Player::Player(
-  std::unique_ptr<rosbag2_cpp::Reader> reader,
-  const rosbag2_storage::StorageOptions & storage_options,
-  const rosbag2_transport::PlayOptions & play_options,
-  const std::string & node_name,
-  const rclcpp::NodeOptions & node_options)
-: Player(std::move(reader),
-    // only call KeyboardHandler when using default keyboard handler implementation
-#ifndef _WIN32
-    std::make_shared<KeyboardHandler>(false),
-#else
-    // We don't have signal handler option in constructor for windows version
-    std::shared_ptr<KeyboardHandler>(new KeyboardHandler()),
-#endif
-    storage_options, play_options,
-    node_name, node_options)
-{}
+  virtual ~PlayerImpl();
 
   bool play();
 
@@ -306,7 +290,7 @@ private:
   bool skip_message_in_main_play_loop_ RCPPUTILS_TSA_GUARDED_BY(
     skip_message_in_main_play_loop_mutex_) = false;
   std::mutex is_in_playback_mutex_;
-  std::atomic_bool is_in_playback_{false} RCPPUTILS_TSA_GUARDED_BY(is_in_playback_mutex_);
+  std::atomic_bool is_in_playback_ RCPPUTILS_TSA_GUARDED_BY(is_in_playback_mutex_) = false;
   std::thread playback_thread_;
   std::condition_variable playback_finished_cv_;
 
