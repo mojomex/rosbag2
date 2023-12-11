@@ -88,6 +88,9 @@ rclcpp::QoS publisher_qos_for_topic(
 namespace rosbag2_transport
 {
 
+Player::Player(const rclcpp::NodeOptions & node_options)
+: Player("rosbag2_player", node_options) {}
+
 Player::Player(const std::string & node_name, const rclcpp::NodeOptions & node_options)
 : rclcpp::Node(node_name, node_options)
 {

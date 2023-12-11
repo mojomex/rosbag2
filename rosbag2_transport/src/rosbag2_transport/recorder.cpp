@@ -40,6 +40,9 @@
 namespace rosbag2_transport
 {
 
+Recorder::Recorder(const rclcpp::NodeOptions & node_options)
+: Recorder("rosbag2_recorder", node_options) {}
+
 Recorder::Recorder(
   const std::string & node_name,
   const rclcpp::NodeOptions & node_options)
