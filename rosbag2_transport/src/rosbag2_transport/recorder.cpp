@@ -198,6 +198,7 @@ public:
   std::unordered_map<std::string, std::shared_ptr<rclcpp::SubscriptionBase>> subscriptions_;
 
   std::vector<std::pair<std::string, std::string>> static_topics_{};  // topic_name, topic_type
+  Recorder::OnStartRecordingCallback on_start_recording_callback_{};
 
 private:
   void create_control_services();
@@ -508,6 +509,10 @@ void RecorderImpl::record(const std::string & uri)
     RCLCPP_INFO(node->get_logger(), "Recording...");
   }
   in_recording_ = true;
+
+  if (on_start_recording_callback_) {
+    on_start_recording_callback_();
+  }
 }
 
 void RecorderImpl::create_control_services()
@@ -1406,6 +1411,11 @@ bool
 Recorder::is_discovery_running() const
 {
   return pimpl_->is_discovery_running();
+}
+
+void Recorder::set_on_start_recording_callback(OnStartRecordingCallback callback) const
+{
+  pimpl_->on_start_recording_callback_ = std::move(callback);
 }
 
 void Recorder::read_static_topics() noexcept
