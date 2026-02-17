@@ -51,6 +51,7 @@
 #include "rosbag2_transport/visibility_control.hpp"
 
 #include "rosgraph_msgs/msg/clock.hpp"
+#include "std_msgs/msg/u_int8.hpp"
 
 namespace rosbag2_cpp
 {
@@ -266,6 +267,7 @@ private:
   std::unordered_map<std::string, std::shared_ptr<PlayerPublisher>> publishers_;
 
 private:
+  rclcpp::Publisher<std_msgs::msg::UInt8>::SharedPtr playback_finished_pub_;
   rosbag2_storage::SerializedBagMessageSharedPtr peek_next_message_from_queue();
   void load_storage_content();
   bool is_storage_completely_loaded() const;

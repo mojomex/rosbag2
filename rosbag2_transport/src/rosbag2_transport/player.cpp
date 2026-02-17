@@ -96,6 +96,7 @@ Player::Player(const rclcpp::NodeOptions & node_options)
 Player::Player(const std::string & node_name, const rclcpp::NodeOptions & node_options)
 : rclcpp::Node(node_name, node_options)
 {
+  playback_finished_pub_ = create_publisher<std_msgs::msg::UInt8>("/rslcpp/error_code", 1);
   auto storage_options = get_storage_options_from_node_params(*this);
   auto play_options = get_play_options_from_node_params(*this);
 
@@ -185,6 +186,7 @@ Player::Player(
   play_options_(play_options),
   keyboard_handler_(keyboard_handler)
 {
+  playback_finished_pub_ = create_publisher<std_msgs::msg::UInt8>("/rslcpp/error_code", 1);
   {
     std::lock_guard<std::mutex> lk(reader_mutex_);
     reader_ = std::move(reader);
@@ -344,6 +346,10 @@ bool Player::play()
         is_in_playback_ = false;
         playback_finished_cv_.notify_all();
       }
+
+      auto finished_message = std_msgs::msg::UInt8();
+      finished_message.data = 0;
+      playback_finished_pub_->publish(finished_message);
     });
   return true;
 }
