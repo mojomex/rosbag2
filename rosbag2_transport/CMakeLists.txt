@@ -229,6 +229,12 @@ function(create_tests_for_rmw_implementation)
     LINK_LIBS rosbag2_transport ${test_msgs_TARGETS} rosbag2_test_common::rosbag2_test_common
     ${rclcpp_components_TARGETS})
 
+  # Smoke test that validates component discoverability/loadability without
+  # directly linking rosbag2_transport into the test process.
+  rosbag2_transport_add_gmock(test_component_smoke
+    test/rosbag2_transport/test_component_smoke.cpp
+    AMENT_DEPS composition_interfaces rclcpp rclcpp_components rosbag2_test_common)
+
   if(${rmw_implementation} MATCHES "rmw_cyclonedds(.*)")
     ament_add_test_label(test_play_services__rmw_cyclonedds_cpp xfail)
   endif()

@@ -497,3 +497,7 @@ void Recorder::warn_if_new_qos_for_subscribed_topic(const std::string & topic_na
 }
 
 }  // namespace rosbag2_transport
+
+#include "rclcpp_components/register_node_macro.hpp"
+
+RCLCPP_COMPONENTS_REGISTER_NODE(rosbag2_transport::Recorder)

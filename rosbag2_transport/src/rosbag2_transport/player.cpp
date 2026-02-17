@@ -858,3 +858,7 @@ void Player::create_control_services()
 }
 
 }  // namespace rosbag2_transport
+
+#include "rclcpp_components/register_node_macro.hpp"
+
+RCLCPP_COMPONENTS_REGISTER_NODE(rosbag2_transport::Player)
