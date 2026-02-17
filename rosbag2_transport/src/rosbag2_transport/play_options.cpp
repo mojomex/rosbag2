@@ -23,6 +23,48 @@
 namespace YAML
 {
 
+template<>
+struct convert<rclcpp::Duration>
+{
+  static Node encode(const rclcpp::Duration & duration)
+  {
+    constexpr int64_t kNanosecondsPerSecond = 1000000000LL;
+    Node node;
+    node["sec"] = duration.nanoseconds() / kNanosecondsPerSecond;
+    node["nsec"] = duration.nanoseconds() % kNanosecondsPerSecond;
+    return node;
+  }
+
+  static bool decode(const Node & node, rclcpp::Duration & duration)
+  {
+    if (!node.IsMap() || !node["sec"] || !node["nsec"]) {
+      return false;
+    }
+    constexpr int64_t kNanosecondsPerSecond = 1000000000LL;
+    const int64_t sec = node["sec"].as<int64_t>();
+    const int64_t nsec = node["nsec"].as<int64_t>();
+    duration = rclcpp::Duration::from_nanoseconds(sec * kNanosecondsPerSecond + nsec);
+    return true;
+  }
+};
+
+template<>
+void optional_assign<rclcpp::Duration>(
+  const Node & node, std::string field, rclcpp::Duration & assign_to)
+{
+  if (!node[field]) {
+    return;
+  }
+  const auto duration_node = node[field];
+  if (!duration_node.IsMap() || !duration_node["sec"] || !duration_node["nsec"]) {
+    return;
+  }
+  constexpr int64_t kNanosecondsPerSecond = 1000000000LL;
+  const int64_t sec = duration_node["sec"].as<int64_t>();
+  const int64_t nsec = duration_node["nsec"].as<int64_t>();
+  assign_to = rclcpp::Duration::from_nanoseconds(sec * kNanosecondsPerSecond + nsec);
+}
+
 Node convert<rosbag2_transport::PlayOptions>::encode(
   const rosbag2_transport::PlayOptions & play_options)
 {

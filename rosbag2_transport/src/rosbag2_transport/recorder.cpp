@@ -33,6 +33,7 @@
 #include "rosbag2_interfaces/srv/snapshot.hpp"
 
 #include "rosbag2_storage/yaml.hpp"
+#include "rosbag2_transport/config_options_from_node_params.hpp"
 #include "rosbag2_transport/qos.hpp"
 
 #include "topic_filter.hpp"
@@ -48,10 +49,45 @@ Recorder::Recorder(
   const rclcpp::NodeOptions & node_options)
 : rclcpp::Node(node_name, node_options)
 {
-  // TODO(karsten1987): Use this constructor later with parameter parsing.
-  // The reader, storage_options as well as record_options can be loaded via parameter.
-  // That way, the recorder can be used as a simple component in a component manager.
-  throw rclcpp::exceptions::UnimplementedError();
+  auto storage_options = get_storage_options_from_node_params(*this);
+  auto record_options = get_record_options_from_node_params(*this);
+
+#ifndef _WIN32
+  auto keyboard_handler = std::make_shared<KeyboardHandler>(false);
+#else
+  // We don't have signal handler option in constructor for windows version
+  auto keyboard_handler = std::shared_ptr<KeyboardHandler>(new KeyboardHandler());
+#endif
+
+  writer_ = std::make_shared<rosbag2_cpp::Writer>();
+  storage_options_ = storage_options;
+  record_options_ = record_options;
+  stop_discovery_ = record_options_.is_discovery_disabled;
+  paused_ = record_options.start_paused;
+  keyboard_handler_ = std::move(keyboard_handler);
+
+  if (record_options_.use_sim_time && record_options_.is_discovery_disabled) {
+    throw std::runtime_error(
+            "use_sim_time and is_discovery_disabled both set, but are incompatible settings. "
+            "The /clock topic needs to be discovered to record with sim time.");
+  }
+
+  std::string key_str = enum_key_code_to_str(Recorder::kPauseResumeToggleKey);
+  toggle_paused_key_callback_handle_ =
+    keyboard_handler_->add_key_press_callback(
+    [this](KeyboardHandler::KeyCode /*key_code*/,
+    KeyboardHandler::KeyModifiers /*key_modifiers*/) {this->toggle_paused();},
+    Recorder::kPauseResumeToggleKey);
+  // show instructions
+  RCLCPP_INFO_STREAM(
+    get_logger(),
+    "Press " << key_str << " for pausing/resuming");
+
+  for (auto & topic : record_options_.topics) {
+    topic = rclcpp::expand_topic_or_service_name(topic, get_name(), get_namespace(), false);
+  }
+
+  record();
 }
 
 Recorder::Recorder(
@@ -115,7 +151,9 @@ Recorder::Recorder(
 
 Recorder::~Recorder()
 {
-  keyboard_handler_->delete_key_press_callback(toggle_paused_key_callback_handle_);
+  if (keyboard_handler_) {
+    keyboard_handler_->delete_key_press_callback(toggle_paused_key_callback_handle_);
+  }
   stop();
 }
 

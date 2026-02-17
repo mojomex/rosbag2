@@ -12,7 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <cmath>
+#include <limits>
+#include <sstream>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include "rclcpp/logging.hpp"
@@ -302,30 +306,6 @@ get_storage_options_from_node_params(rclcpp::Node & node)
     node.declare_parameter<std::string>("storage.storage_preset_profile", "");
 
   storage_options.snapshot_mode = node.declare_parameter<bool>("storage.snapshot_mode", false);
-
-  auto list_of_key_value_strings = node.declare_parameter<std::vector<std::string>>(
-    "storage.custom_data",
-    std::vector<std::string>());
-  for (const auto & key_value_string : list_of_key_value_strings) {
-    auto delimiter_pos = key_value_string.find("=", 0);
-    if (delimiter_pos == std::string::npos) {
-      std::stringstream ss;
-      ss << "The storage.custom_data expected to be as list of the key=value strings. "
-        "The `=` not found in the " << key_value_string;
-      throw std::invalid_argument(ss.str());
-    }
-    auto key_string = key_value_string.substr(0, delimiter_pos);
-    auto value_string = key_value_string.substr(delimiter_pos + 1);
-    storage_options.custom_data[key_string] = value_string;
-  }
-
-  storage_options.start_time_ns = param_utils::declare_integer_node_params<int64_t>(
-    node, "storage.start_time_ns", std::numeric_limits<int64_t>::min(),
-    std::numeric_limits<int64_t>::max(), storage_options.start_time_ns);
-
-  storage_options.end_time_ns = param_utils::declare_integer_node_params<int64_t>(
-    node, "storage.end_time_ns", std::numeric_limits<int64_t>::min(),
-    std::numeric_limits<int64_t>::max(), storage_options.end_time_ns);
 
   return storage_options;
 }
