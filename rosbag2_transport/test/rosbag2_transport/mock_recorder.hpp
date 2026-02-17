@@ -72,8 +72,6 @@ public:
     return available_for_recording;
   }
 
-  using rosbag2_transport::Recorder::get_storage_options;
-  using rosbag2_transport::Recorder::get_record_options;
 };
 
 #endif  // ROSBAG2_TRANSPORT__MOCK_RECORDER_HPP_
