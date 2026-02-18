@@ -10,3 +10,6 @@ venv/
 __pycache__/
 *.db3-*
 
+build_local/
+install_local/
+log_local/
