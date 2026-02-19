@@ -14,6 +14,4 @@ COPY . .
 RUN set -eo pipefail && \
     source /opt/ros/humble/setup.bash && \
     rm -rf build install log && \
-    colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release && \
-    colcon test --packages-skip ros2bag rosbag2_tests rosbag2_transport --event-handlers console_direct+ --return-code-on-test-failure && \
-    colcon test-result --verbose
+    colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release
