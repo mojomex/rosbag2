@@ -51,7 +51,9 @@
 #include "rosbag2_transport/visibility_control.hpp"
 
 #include "rosgraph_msgs/msg/clock.hpp"
+#include "std_msgs/msg/bool.hpp"
 #include "std_msgs/msg/u_int8.hpp"
+#include "std_srvs/srv/trigger.hpp"
 
 namespace rosbag2_cpp
 {
@@ -291,6 +293,15 @@ private:
   void add_keyboard_callbacks();
 
   void create_control_services();
+  void set_player_ready(bool ready);
+  void complete_playback(std_msgs::msg::UInt8::_data_type exit_code = 0);
+  bool read_next_executor_message();
+  rcutils_time_point_value_t scale_bag_time_delta(
+    rcutils_time_point_value_t bag_delta_ns) const;
+  rcutils_time_point_value_t scheduled_time_for_bag_timestamp(
+    rcutils_time_point_value_t bag_timestamp_ns) const;
+  void start_executor_playback(const rclcpp::Duration & delay);
+  void schedule_executor_playback();
 
   rosbag2_storage::StorageOptions storage_options_;
   rosbag2_transport::PlayOptions play_options_;
@@ -311,6 +322,8 @@ private:
   rcutils_time_point_value_t starting_time_;
 
   // control services
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_start_playback_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_stop_playback_;
   rclcpp::Service<rosbag2_interfaces::srv::Pause>::SharedPtr srv_pause_;
   rclcpp::Service<rosbag2_interfaces::srv::Resume>::SharedPtr srv_resume_;
   rclcpp::Service<rosbag2_interfaces::srv::TogglePaused>::SharedPtr srv_toggle_paused_;
@@ -321,7 +334,15 @@ private:
   rclcpp::Service<rosbag2_interfaces::srv::Burst>::SharedPtr srv_burst_;
   rclcpp::Service<rosbag2_interfaces::srv::Seek>::SharedPtr srv_seek_;
 
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr player_ready_pub_;
+  std::atomic_bool player_ready_state_{false};
   rclcpp::Publisher<rosbag2_interfaces::msg::ReadSplitEvent>::SharedPtr split_event_pub_;
+  bool executor_playback_mode_{false};
+  std::shared_ptr<rclcpp::TimerBase> executor_playback_timer_;
+  rosbag2_storage::SerializedBagMessageSharedPtr executor_next_message_{};
+  rcutils_time_point_value_t executor_playback_start_time_{0};
+  rcutils_time_point_value_t executor_pause_start_time_{0};
+  bool executor_paused_{false};
 
   // defaults
   std::shared_ptr<KeyboardHandler> keyboard_handler_;

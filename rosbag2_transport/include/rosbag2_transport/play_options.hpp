@@ -100,6 +100,10 @@ public:
 
   // Disable to publish as loaned message
   bool disable_loan_message = false;
+
+  // When enabled, playback scheduling is driven by executor callbacks (timers)
+  // instead of an internal while-loop thread.
+  bool executor_playback = false;
 };
 
 }  // namespace rosbag2_transport

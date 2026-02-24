@@ -98,6 +98,7 @@ Node convert<rosbag2_transport::PlayOptions>::encode(
     std::chrono::nanoseconds(play_options.wait_acked_timeout));
 
   node["disable_loan_message"] = play_options.disable_loan_message;
+  node["executor_playback"] = play_options.executor_playback;
 
   return node;
 }
@@ -149,6 +150,7 @@ bool convert<rosbag2_transport::PlayOptions>::decode(
   play_options.wait_acked_timeout = wait_acked_timeout.nanoseconds();
 
   optional_assign<bool>(node, "disable_loan_message", play_options.disable_loan_message);
+  optional_assign<bool>(node, "executor_playback", play_options.executor_playback);
 
   return true;
 }

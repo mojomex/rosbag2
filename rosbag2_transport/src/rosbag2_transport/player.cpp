@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <limits>
 #include <memory>
 #include <queue>
 #include <string>
@@ -97,6 +98,9 @@ Player::Player(const std::string & node_name, const rclcpp::NodeOptions & node_o
 : rclcpp::Node(node_name, node_options)
 {
   playback_finished_pub_ = create_publisher<std_msgs::msg::UInt8>("/rslcpp/error_code", 1);
+  player_ready_pub_ = create_publisher<std_msgs::msg::Bool>(
+    "~/player_ready", rclcpp::QoS(1).reliable().transient_local());
+  set_player_ready(false);
   auto storage_options = get_storage_options_from_node_params(*this);
   auto play_options = get_play_options_from_node_params(*this);
 
@@ -111,6 +115,7 @@ Player::Player(const std::string & node_name, const rclcpp::NodeOptions & node_o
 
   storage_options_ = storage_options;
   play_options_ = play_options;
+  executor_playback_mode_ = play_options_.executor_playback;
   keyboard_handler_ = std::move(keyboard_handler);
 
   {
@@ -184,9 +189,13 @@ Player::Player(
     rclcpp::NodeOptions(node_options).arguments(play_options.topic_remapping_options)),
   storage_options_(storage_options),
   play_options_(play_options),
+  executor_playback_mode_(play_options_.executor_playback),
   keyboard_handler_(keyboard_handler)
 {
   playback_finished_pub_ = create_publisher<std_msgs::msg::UInt8>("/rslcpp/error_code", 1);
+  player_ready_pub_ = create_publisher<std_msgs::msg::Bool>(
+    "~/player_ready", rclcpp::QoS(1).reliable().transient_local());
+  set_player_ready(false);
   {
     std::lock_guard<std::mutex> lk(reader_mutex_);
     reader_ = std::move(reader);
@@ -262,6 +271,7 @@ bool Player::play()
   }
 
   stop_playback_ = false;
+  set_player_ready(false);
 
   rclcpp::Duration delay(0, 0);
   if (play_options_.delay >= rclcpp::Duration(0, 0)) {
@@ -272,12 +282,18 @@ bool Player::play()
       "Invalid delay value: " << play_options_.delay.nanoseconds() << ". Delay is disabled.");
   }
 
+  if (executor_playback_mode_) {
+    start_executor_playback(delay);
+    return true;
+  }
+
   // May need to join the previous thread if we are calling play() a second time
   if (playback_thread_.joinable()) {
     playback_thread_.join();
   }
   playback_thread_ = std::thread(
     [this, delay]() {
+      std_msgs::msg::UInt8::_data_type exit_code = 0;
       try {
         do {
           if (delay > rclcpp::Duration(0, 0)) {
@@ -304,9 +320,11 @@ bool Player::play()
             is_ready_to_play_from_queue_ = false;
             ready_to_play_from_queue_cv_.notify_all();
           }
+          set_player_ready(false);
         } while (rclcpp::ok() && !stop_playback_ && play_options_.loop);
       } catch (const std::runtime_error & e) {
         RCLCPP_ERROR(get_logger(), "Failed to play: %s", e.what());
+        exit_code = 1;
         load_storage_content_ = false;
         if (storage_loading_future_.valid()) {storage_loading_future_.get();}
         while (message_queue_.pop()) {}
@@ -317,41 +335,196 @@ bool Player::play()
         is_ready_to_play_from_queue_ = false;
         ready_to_play_from_queue_cv_.notify_all();
       }
-
-      // Wait for all published messages to be acknowledged.
-      if (play_options_.wait_acked_timeout >= 0) {
-        std::chrono::milliseconds timeout(play_options_.wait_acked_timeout);
-        if (timeout == std::chrono::milliseconds(0)) {
-          timeout = std::chrono::milliseconds(-1);
-        }
-        for (const auto & pub : publishers_) {
-          try {
-            if (!pub.second->generic_publisher()->wait_for_all_acked(timeout)) {
-              RCLCPP_ERROR(
-                get_logger(),
-                "Timed out while waiting for all published messages to be acknowledged "
-                "for topic %s", pub.first.c_str());
-            }
-          } catch (const std::exception & e) {
-            RCLCPP_ERROR(
-              get_logger(),
-              "Exception occurred while waiting for all published messages to be acknowledged for "
-              "topic %s : %s", pub.first.c_str(), e.what());
-          }
-        }
-      }
-
-      {
-        TSAUniqueLock is_in_playback_lk(is_in_playback_mutex_);
-        is_in_playback_ = false;
-        playback_finished_cv_.notify_all();
-      }
-
-      auto finished_message = std_msgs::msg::UInt8();
-      finished_message.data = 0;
-      playback_finished_pub_->publish(finished_message);
+      complete_playback(exit_code);
     });
   return true;
+}
+
+void Player::complete_playback(std_msgs::msg::UInt8::_data_type exit_code)
+{
+  {
+    TSAUniqueLock is_in_playback_lk(is_in_playback_mutex_);
+    if (!is_in_playback_) {
+      return;
+    }
+  }
+
+  set_player_ready(false);
+  if (executor_playback_timer_) {
+    executor_playback_timer_->cancel();
+    executor_playback_timer_.reset();
+  }
+
+  // Wait for all published messages to be acknowledged.
+  if (play_options_.wait_acked_timeout >= 0) {
+    std::chrono::milliseconds timeout(play_options_.wait_acked_timeout);
+    if (timeout == std::chrono::milliseconds(0)) {
+      timeout = std::chrono::milliseconds(-1);
+    }
+    for (const auto & pub : publishers_) {
+      try {
+        if (!pub.second->generic_publisher()->wait_for_all_acked(timeout)) {
+          RCLCPP_ERROR(
+            get_logger(),
+            "Timed out while waiting for all published messages to be acknowledged "
+            "for topic %s", pub.first.c_str());
+        }
+      } catch (const std::exception & e) {
+        RCLCPP_ERROR(
+          get_logger(),
+          "Exception occurred while waiting for all published messages to be acknowledged for "
+          "topic %s : %s", pub.first.c_str(), e.what());
+      }
+    }
+  }
+
+  {
+    TSAUniqueLock is_in_playback_lk(is_in_playback_mutex_);
+    if (!is_in_playback_) {
+      return;
+    }
+    is_in_playback_ = false;
+    playback_finished_cv_.notify_all();
+  }
+
+  auto finished_message = std_msgs::msg::UInt8();
+  finished_message.data = exit_code;
+  playback_finished_pub_->publish(finished_message);
+}
+
+bool Player::read_next_executor_message()
+{
+  std::lock_guard<std::mutex> lk(reader_mutex_);
+  if (!reader_->has_next()) {
+    executor_next_message_.reset();
+    return false;
+  }
+  executor_next_message_ = reader_->read_next();
+  return true;
+}
+
+rcutils_time_point_value_t Player::scale_bag_time_delta(
+  rcutils_time_point_value_t bag_delta_ns) const
+{
+  if (bag_delta_ns <= 0) {
+    return 0;
+  }
+  const auto rate = get_rate();
+  if (rate <= 0.0) {
+    return bag_delta_ns;
+  }
+  const long double scaled =
+    static_cast<long double>(bag_delta_ns) / static_cast<long double>(rate);
+  const auto max_ns = static_cast<long double>(
+    std::numeric_limits<rcutils_time_point_value_t>::max());
+  if (scaled >= max_ns) {
+    return std::numeric_limits<rcutils_time_point_value_t>::max();
+  }
+  return static_cast<rcutils_time_point_value_t>(scaled);
+}
+
+rcutils_time_point_value_t Player::scheduled_time_for_bag_timestamp(
+  rcutils_time_point_value_t bag_timestamp_ns) const
+{
+  rcutils_time_point_value_t bag_delta_ns = bag_timestamp_ns - starting_time_;
+  if (bag_delta_ns < 0) {
+    bag_delta_ns = 0;
+  }
+  const auto scaled_delta_ns = scale_bag_time_delta(bag_delta_ns);
+  if (executor_playback_start_time_ >
+    std::numeric_limits<rcutils_time_point_value_t>::max() - scaled_delta_ns)
+  {
+    return std::numeric_limits<rcutils_time_point_value_t>::max();
+  }
+  return executor_playback_start_time_ + scaled_delta_ns;
+}
+
+void Player::start_executor_playback(const rclcpp::Duration & delay)
+{
+  {
+    std::lock_guard<std::mutex> lk(reader_mutex_);
+    reader_->seek(starting_time_);
+    clock_->jump(starting_time_);
+  }
+  executor_playback_start_time_ = this->get_clock()->now().nanoseconds();
+  if (delay.nanoseconds() > 0) {
+    executor_playback_start_time_ += delay.nanoseconds();
+  }
+  executor_pause_start_time_ = 0;
+  executor_paused_ = clock_->is_paused();
+  if (!read_next_executor_message()) {
+    complete_playback(0);
+    return;
+  }
+
+  set_player_ready(true);
+  if (!executor_paused_) {
+    schedule_executor_playback();
+  }
+}
+
+void Player::schedule_executor_playback()
+{
+  if (!rclcpp::ok() || stop_playback_ || !is_in_playback_.load()) {
+    return;
+  }
+  if (executor_paused_) {
+    return;
+  }
+
+  if (executor_playback_timer_) {
+    executor_playback_timer_->cancel();
+    executor_playback_timer_.reset();
+  }
+
+  auto now_ns = this->get_clock()->now().nanoseconds();
+  while (executor_next_message_ && !stop_playback_ && rclcpp::ok()) {
+    const auto scheduled_time_ns =
+      scheduled_time_for_bag_timestamp(executor_next_message_->time_stamp);
+    if (scheduled_time_ns > now_ns) {
+      const auto timer_delay_ns = scheduled_time_ns - now_ns;
+      executor_playback_timer_ = rclcpp::create_timer(
+        this, this->get_clock(), std::chrono::nanoseconds(timer_delay_ns),
+        [this]() {
+          if (executor_playback_timer_) {
+            executor_playback_timer_->cancel();
+            executor_playback_timer_.reset();
+          }
+          schedule_executor_playback();
+        });
+      return;
+    }
+
+    clock_->jump(executor_next_message_->time_stamp);
+    publish_message(executor_next_message_);
+    if (!read_next_executor_message()) {
+      break;
+    }
+    now_ns = this->get_clock()->now().nanoseconds();
+  }
+
+  if (stop_playback_ || !rclcpp::ok()) {
+    return;
+  }
+  if (executor_next_message_) {
+    return;
+  }
+  if (play_options_.loop) {
+    {
+      std::lock_guard<std::mutex> lk(reader_mutex_);
+      reader_->seek(starting_time_);
+      clock_->jump(starting_time_);
+    }
+    executor_playback_start_time_ = this->get_clock()->now().nanoseconds();
+    if (play_options_.delay.nanoseconds() > 0) {
+      executor_playback_start_time_ += play_options_.delay.nanoseconds();
+    }
+    if (read_next_executor_message()) {
+      schedule_executor_playback();
+      return;
+    }
+  }
+  complete_playback(0);
 }
 
 bool Player::wait_for_playback_to_finish(std::chrono::duration<double> timeout)
@@ -377,6 +550,20 @@ void Player::stop()
 
   RCLCPP_INFO_STREAM(get_logger(), "Stopping playback.");
   stop_playback_ = true;
+  set_player_ready(false);
+
+  if (executor_playback_mode_) {
+    if (executor_playback_timer_) {
+      executor_playback_timer_->cancel();
+      executor_playback_timer_.reset();
+    }
+    executor_next_message_.reset();
+    executor_paused_ = false;
+    is_in_playback_lk.unlock();
+    complete_playback(0);
+    return;
+  }
+
   {
     std::lock_guard<std::mutex> main_play_loop_lk(skip_message_in_main_play_loop_mutex_);
     skip_message_in_main_play_loop_ = true;
@@ -397,12 +584,33 @@ void Player::stop()
 void Player::pause()
 {
   clock_->pause();
+  if (executor_playback_mode_ && is_in_playback_.load()) {
+    executor_paused_ = true;
+    executor_pause_start_time_ = this->get_clock()->now().nanoseconds();
+    if (executor_playback_timer_) {
+      executor_playback_timer_->cancel();
+      executor_playback_timer_.reset();
+    }
+  }
   RCLCPP_INFO_STREAM(get_logger(), "Pausing play.");
 }
 
 void Player::resume()
 {
   clock_->resume();
+  if (executor_playback_mode_ && is_in_playback_.load()) {
+    if (executor_paused_) {
+      const auto now_ns = this->get_clock()->now().nanoseconds();
+      executor_playback_start_time_ += (now_ns - executor_pause_start_time_);
+      executor_pause_start_time_ = 0;
+      executor_paused_ = false;
+    }
+    if (executor_next_message_) {
+      schedule_executor_playback();
+    } else if (!play_options_.loop) {
+      complete_playback(0);
+    }
+  }
   RCLCPP_INFO_STREAM(get_logger(), "Resuming play.");
 }
 
@@ -463,6 +671,22 @@ rosbag2_storage::SerializedBagMessageSharedPtr Player::peek_next_message_from_qu
 
 bool Player::play_next()
 {
+  if (executor_playback_mode_) {
+    if (!clock_->is_paused()) {
+      RCLCPP_WARN_STREAM(get_logger(), "Called play next, but not in paused state.");
+      return false;
+    }
+    if (!executor_next_message_) {
+      return false;
+    }
+    clock_->jump(executor_next_message_->time_stamp);
+    const bool next_message_published = publish_message(executor_next_message_);
+    if (next_message_published) {
+      read_next_executor_message();
+    }
+    return next_message_published;
+  }
+
   if (!clock_->is_paused()) {
     RCLCPP_WARN_STREAM(get_logger(), "Called play next, but not in paused state.");
     return false;
@@ -514,6 +738,40 @@ size_t Player::burst(const size_t num_messages)
 
 void Player::seek(rcutils_time_point_value_t time_point)
 {
+  if (executor_playback_mode_) {
+    // if given seek value is earlier than the beginning of the bag, then clamp
+    // it to the beginning of the bag
+    if (time_point < starting_time_) {
+      time_point = starting_time_;
+    }
+    {
+      std::lock_guard<std::mutex> lk(reader_mutex_);
+      reader_->seek(time_point);
+      clock_->jump(time_point);
+    }
+    read_next_executor_message();
+
+    const auto now_ns = this->get_clock()->now().nanoseconds();
+    rcutils_time_point_value_t bag_delta_ns = time_point - starting_time_;
+    if (bag_delta_ns < 0) {
+      bag_delta_ns = 0;
+    }
+    executor_playback_start_time_ = now_ns - scale_bag_time_delta(bag_delta_ns);
+
+    if (executor_playback_timer_) {
+      executor_playback_timer_->cancel();
+      executor_playback_timer_.reset();
+    }
+    if (!clock_->is_paused()) {
+      if (executor_next_message_) {
+        schedule_executor_playback();
+      } else if (!play_options_.loop) {
+        complete_playback(0);
+      }
+    }
+    return;
+  }
+
   // Temporary stop playback in play_messages_from_queue() and block play_next()
   std::lock_guard<std::mutex> main_play_loop_lk(skip_message_in_main_play_loop_mutex_);
   skip_message_in_main_play_loop_ = true;
@@ -599,6 +857,7 @@ void Player::play_messages_from_queue()
     is_ready_to_play_from_queue_ = true;
     ready_to_play_from_queue_cv_.notify_all();
   }
+  set_player_ready(true);
   while (message_ptr != nullptr && rclcpp::ok() && !stop_playback_) {
     // Do not move on until sleep_until returns true
     // It will always sleep, so this is not a tight busy loop on pause
@@ -788,6 +1047,44 @@ void Player::add_keyboard_callbacks()
 
 void Player::create_control_services()
 {
+  srv_start_playback_ = create_service<std_srvs::srv::Trigger>(
+    "~/start_playback",
+    [this](
+      std_srvs::srv::Trigger::Request::ConstSharedPtr,
+      std_srvs::srv::Trigger::Response::SharedPtr response)
+    {
+      if (is_in_playback_.load()) {
+        if (is_paused()) {
+          resume();
+          response->message = "Playback resumed.";
+        } else {
+          response->message = "Playback already running.";
+        }
+        response->success = true;
+        return;
+      }
+
+      response->success = play();
+      if (!response->success) {
+        response->message = "Failed to start playback.";
+        return;
+      }
+
+      if (is_paused()) {
+        resume();
+      }
+      response->message = "Playback started.";
+    });
+  srv_stop_playback_ = create_service<std_srvs::srv::Trigger>(
+    "~/stop_playback",
+    [this](
+      std_srvs::srv::Trigger::Request::ConstSharedPtr,
+      std_srvs::srv::Trigger::Response::SharedPtr response)
+    {
+      stop();
+      response->success = true;
+      response->message = "Playback stopped.";
+    });
   srv_pause_ = create_service<rosbag2_interfaces::srv::Pause>(
     "~/pause",
     [this](
@@ -861,6 +1158,16 @@ void Player::create_control_services()
       seek(rclcpp::Time(request->time).nanoseconds());
       response->success = true;
     });
+}
+
+void Player::set_player_ready(bool ready)
+{
+  if (player_ready_state_.exchange(ready) == ready) {
+    return;
+  }
+  std_msgs::msg::Bool ready_msg;
+  ready_msg.data = ready;
+  player_ready_pub_->publish(ready_msg);
 }
 
 }  // namespace rosbag2_transport

@@ -38,6 +38,7 @@
 
 #include "rosbag2_transport/record_options.hpp"
 #include "rosbag2_transport/visibility_control.hpp"
+#include "std_srvs/srv/trigger.hpp"
 
 namespace rosbag2_cpp
 {
@@ -162,6 +163,7 @@ protected:
   std::atomic<bool> stop_discovery_;
 
 private:
+  void create_control_services();
   void topics_discovery();
 
   std::unordered_map<std::string, std::string>
@@ -198,7 +200,10 @@ private:
   std::unordered_map<std::string, rclcpp::QoS> topic_qos_profile_overrides_;
   std::unordered_set<std::string> topic_unknown_types_;
   rclcpp::Service<rosbag2_interfaces::srv::Snapshot>::SharedPtr srv_snapshot_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_start_recording_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_stop_recording_;
   std::atomic<bool> paused_ = false;
+  std::atomic<bool> is_recording_ = false;
 
   // Keyboard handler
   std::shared_ptr<KeyboardHandler> keyboard_handler_;

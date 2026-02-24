@@ -34,6 +34,7 @@ find_package(rosbag2_cpp REQUIRED)
 find_package(rosbag2_interfaces REQUIRED)
 find_package(rosbag2_storage REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 find_package(rmw_implementation_cmake REQUIRED)
 find_package(shared_queues_vendor REQUIRED)
 find_package(yaml_cpp_vendor REQUIRED)
@@ -63,6 +64,7 @@ ament_target_dependencies(${PROJECT_NAME}
   rosbag2_interfaces
   rosbag2_storage
   std_msgs
+  std_srvs
   shared_queues_vendor
   yaml_cpp_vendor
 )
@@ -103,6 +105,7 @@ ament_export_dependencies(
   rosbag2_compression
   rosbag2_interfaces
   std_msgs
+  std_srvs
   shared_queues_vendor
   yaml_cpp_vendor)
 
@@ -119,6 +122,11 @@ function(create_tests_for_rmw_implementation)
     LINK_LIBS rosbag2_transport
     AMENT_DEPS test_msgs rosbag2_test_common
     ${SKIP_TEST})
+
+  rosbag2_transport_add_gmock(test_play_executor_playback
+    test/rosbag2_transport/test_play_executor_playback.cpp
+    LINK_LIBS rosbag2_transport
+    AMENT_DEPS test_msgs rosbag2_test_common)
 
   # Disabled for this Humble backport branch: relies on newer APIs and test fixtures
   # that are not part of the minimal componentization scope.

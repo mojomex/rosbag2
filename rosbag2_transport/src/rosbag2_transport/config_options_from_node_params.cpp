@@ -202,6 +202,9 @@ PlayOptions get_play_options_from_node_params(rclcpp::Node & node)
   play_options.disable_loan_message =
     node.declare_parameter<bool>("play.disable_loan_message", false);
 
+  play_options.executor_playback =
+    node.declare_parameter<bool>("play.executor_playback", false);
+
   return play_options;
 }
 

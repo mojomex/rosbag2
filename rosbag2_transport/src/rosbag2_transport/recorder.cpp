@@ -87,6 +87,7 @@ Recorder::Recorder(
     topic = rclcpp::expand_topic_or_service_name(topic, get_name(), get_namespace(), false);
   }
 
+  create_control_services();
   record();
 }
 
@@ -147,6 +148,8 @@ Recorder::Recorder(
   for (auto & topic : record_options_.topics) {
     topic = rclcpp::expand_topic_or_service_name(topic, get_name(), get_namespace(), false);
   }
+
+  create_control_services();
 }
 
 Recorder::~Recorder()
@@ -159,7 +162,7 @@ Recorder::~Recorder()
 
 void Recorder::stop()
 {
-  if (event_publisher_thread_should_exit_) {
+  if (!is_recording_.load()) {
     return;  // We are not in recording and therefore shall not do stop operation.
   }
   stop_discovery_ = true;
@@ -184,11 +187,16 @@ void Recorder::stop()
   if (event_publisher_thread_.joinable()) {
     event_publisher_thread_.join();
   }
+  is_recording_ = false;
   RCLCPP_INFO(get_logger(), "Recording stopped");
 }
 
 void Recorder::record()
 {
+  if (is_recording_.load()) {
+    RCLCPP_WARN(get_logger(), "record() called while already recording.");
+    return;
+  }
   event_publisher_thread_should_exit_ = false;
   stop_discovery_ = record_options_.is_discovery_disabled;
   paused_ = record_options_.start_paused;
@@ -200,6 +208,7 @@ void Recorder::record()
   writer_->open(
     storage_options_,
     {rmw_get_serialization_format(), record_options_.rmw_serialization_format});
+  is_recording_ = true;
 
   // Only expose snapshot service when mode is enabled
   if (storage_options_.snapshot_mode) {
@@ -249,6 +258,51 @@ void Recorder::record()
   } else {
     RCLCPP_INFO(get_logger(), "Recording...");
   }
+}
+
+void Recorder::create_control_services()
+{
+  srv_start_recording_ = create_service<std_srvs::srv::Trigger>(
+    "~/start_recording",
+    [this](
+      std_srvs::srv::Trigger::Request::ConstSharedPtr,
+      std_srvs::srv::Trigger::Response::SharedPtr response)
+    {
+      try {
+        const bool was_recording = is_recording_.load();
+        if (!was_recording) {
+          record();
+        }
+        if (is_paused()) {
+          resume();
+          response->message = was_recording ? "Recording resumed." : "Recording started.";
+        } else {
+          response->message = was_recording ? "Recording already running." : "Recording started.";
+        }
+        response->success = true;
+      } catch (const std::exception & e) {
+        response->success = false;
+        response->message = e.what();
+      }
+    });
+
+  srv_stop_recording_ = create_service<std_srvs::srv::Trigger>(
+    "~/stop_recording",
+    [this](
+      std_srvs::srv::Trigger::Request::ConstSharedPtr,
+      std_srvs::srv::Trigger::Response::SharedPtr response)
+    {
+      try {
+        if (is_recording_.load()) {
+          stop();
+        }
+        response->success = true;
+        response->message = "Recording stopped.";
+      } catch (const std::exception & e) {
+        response->success = false;
+        response->message = e.what();
+      }
+    });
 }
 
 void Recorder::event_publisher_thread_main()
