@@ -16,7 +16,6 @@
 
 #include <algorithm>
 #include <chrono>
-#include <limits>
 #include <memory>
 #include <queue>
 #include <string>
@@ -99,7 +98,7 @@ Player::Player(const std::string & node_name, const rclcpp::NodeOptions & node_o
 {
   playback_finished_pub_ = create_publisher<std_msgs::msg::UInt8>("/rslcpp/error_code", 1);
   player_ready_pub_ = create_publisher<std_msgs::msg::Bool>(
-    "~/player_ready", rclcpp::QoS(1).reliable().transient_local());
+    "~/player_ready", rclcpp::QoS(1).reliable().durability_volatile());
   set_player_ready(false);
   auto storage_options = get_storage_options_from_node_params(*this);
   auto play_options = get_play_options_from_node_params(*this);
@@ -186,7 +185,8 @@ Player::Player(
   const rclcpp::NodeOptions & node_options)
 : rclcpp::Node(
     node_name,
-    rclcpp::NodeOptions(node_options).arguments(play_options.topic_remapping_options)),
+    rclcpp::NodeOptions(node_options)
+    .arguments(play_options.topic_remapping_options)),
   storage_options_(storage_options),
   play_options_(play_options),
   executor_playback_mode_(play_options_.executor_playback),
@@ -194,7 +194,7 @@ Player::Player(
 {
   playback_finished_pub_ = create_publisher<std_msgs::msg::UInt8>("/rslcpp/error_code", 1);
   player_ready_pub_ = create_publisher<std_msgs::msg::Bool>(
-    "~/player_ready", rclcpp::QoS(1).reliable().transient_local());
+    "~/player_ready", rclcpp::QoS(1).reliable().durability_volatile());
   set_player_ready(false);
   {
     std::lock_guard<std::mutex> lk(reader_mutex_);
@@ -350,10 +350,6 @@ void Player::complete_playback(std_msgs::msg::UInt8::_data_type exit_code)
   }
 
   set_player_ready(false);
-  if (executor_playback_timer_) {
-    executor_playback_timer_->cancel();
-    executor_playback_timer_.reset();
-  }
 
   // Wait for all published messages to be acknowledged.
   if (play_options_.wait_acked_timeout >= 0) {
@@ -400,131 +396,75 @@ bool Player::read_next_executor_message()
     return false;
   }
   executor_next_message_ = reader_->read_next();
+  executor_end_of_bag_reached_ = false;
   return true;
-}
-
-rcutils_time_point_value_t Player::scale_bag_time_delta(
-  rcutils_time_point_value_t bag_delta_ns) const
-{
-  if (bag_delta_ns <= 0) {
-    return 0;
-  }
-  const auto rate = get_rate();
-  if (rate <= 0.0) {
-    return bag_delta_ns;
-  }
-  const long double scaled =
-    static_cast<long double>(bag_delta_ns) / static_cast<long double>(rate);
-  const auto max_ns = static_cast<long double>(
-    std::numeric_limits<rcutils_time_point_value_t>::max());
-  if (scaled >= max_ns) {
-    return std::numeric_limits<rcutils_time_point_value_t>::max();
-  }
-  return static_cast<rcutils_time_point_value_t>(scaled);
-}
-
-rcutils_time_point_value_t Player::scheduled_time_for_bag_timestamp(
-  rcutils_time_point_value_t bag_timestamp_ns) const
-{
-  rcutils_time_point_value_t bag_delta_ns = bag_timestamp_ns - starting_time_;
-  if (bag_delta_ns < 0) {
-    bag_delta_ns = 0;
-  }
-  const auto scaled_delta_ns = scale_bag_time_delta(bag_delta_ns);
-  if (executor_playback_start_time_ >
-    std::numeric_limits<rcutils_time_point_value_t>::max() - scaled_delta_ns)
-  {
-    return std::numeric_limits<rcutils_time_point_value_t>::max();
-  }
-  return executor_playback_start_time_ + scaled_delta_ns;
 }
 
 void Player::start_executor_playback(const rclcpp::Duration & delay)
 {
+  (void)delay;
   {
     std::lock_guard<std::mutex> lk(reader_mutex_);
     reader_->seek(starting_time_);
     clock_->jump(starting_time_);
   }
-  executor_playback_start_time_ = this->get_clock()->now().nanoseconds();
-  if (delay.nanoseconds() > 0) {
-    executor_playback_start_time_ += delay.nanoseconds();
-  }
-  executor_pause_start_time_ = 0;
   executor_paused_ = clock_->is_paused();
+  executor_end_of_bag_reached_ = false;
   if (!read_next_executor_message()) {
     complete_playback(0);
     return;
   }
 
   set_player_ready(true);
-  if (!executor_paused_) {
-    schedule_executor_playback();
-  }
 }
 
-void Player::schedule_executor_playback()
+bool Player::step_executor_playback(rclcpp::Time & sim_time)
 {
   if (!rclcpp::ok() || stop_playback_ || !is_in_playback_.load()) {
-    return;
+    return false;
   }
   if (executor_paused_) {
-    return;
+    return false;
   }
 
-  if (executor_playback_timer_) {
-    executor_playback_timer_->cancel();
-    executor_playback_timer_.reset();
+  if (executor_end_of_bag_reached_) {
+    if (play_options_.loop) {
+      {
+        std::lock_guard<std::mutex> lk(reader_mutex_);
+        reader_->seek(starting_time_);
+        clock_->jump(starting_time_);
+      }
+      executor_end_of_bag_reached_ = false;
+      if (!read_next_executor_message()) {
+        complete_playback(0);
+        return false;
+      }
+    } else {
+      complete_playback(0);
+      return false;
+    }
   }
 
-  auto now_ns = this->get_clock()->now().nanoseconds();
-  while (executor_next_message_ && !stop_playback_ && rclcpp::ok()) {
-    const auto scheduled_time_ns =
-      scheduled_time_for_bag_timestamp(executor_next_message_->time_stamp);
-    if (scheduled_time_ns > now_ns) {
-      const auto timer_delay_ns = scheduled_time_ns - now_ns;
-      executor_playback_timer_ = rclcpp::create_timer(
-        this, this->get_clock(), std::chrono::nanoseconds(timer_delay_ns),
-        [this]() {
-          if (executor_playback_timer_) {
-            executor_playback_timer_->cancel();
-            executor_playback_timer_.reset();
-          }
-          schedule_executor_playback();
-        });
-      return;
-    }
-
-    clock_->jump(executor_next_message_->time_stamp);
-    publish_message(executor_next_message_);
-    if (!read_next_executor_message()) {
-      break;
-    }
-    now_ns = this->get_clock()->now().nanoseconds();
+  if (!executor_next_message_) {
+    return false;
   }
 
-  if (stop_playback_ || !rclcpp::ok()) {
-    return;
+  sim_time = rclcpp::Time(executor_next_message_->time_stamp, RCL_ROS_TIME);
+  publish_clock(executor_next_message_->time_stamp);
+  clock_->jump(executor_next_message_->time_stamp);
+  publish_message(executor_next_message_);
+  if (!read_next_executor_message()) {
+    executor_end_of_bag_reached_ = true;
   }
-  if (executor_next_message_) {
-    return;
+  return true;
+}
+
+bool Player::step_on_executor_idle(rclcpp::Time & sim_time)
+{
+  if (!executor_playback_mode_) {
+    return false;
   }
-  if (play_options_.loop) {
-    {
-      std::lock_guard<std::mutex> lk(reader_mutex_);
-      reader_->seek(starting_time_);
-      clock_->jump(starting_time_);
-    }
-    executor_playback_start_time_ = this->get_clock()->now().nanoseconds();
-    if (play_options_.delay.nanoseconds() > 0) {
-      executor_playback_start_time_ += play_options_.delay.nanoseconds();
-    }
-    if (read_next_executor_message()) {
-      schedule_executor_playback();
-      return;
-    }
-  }
-  complete_playback(0);
+  return step_executor_playback(sim_time);
 }
 
 bool Player::wait_for_playback_to_finish(std::chrono::duration<double> timeout)
@@ -553,12 +493,9 @@ void Player::stop()
   set_player_ready(false);
 
   if (executor_playback_mode_) {
-    if (executor_playback_timer_) {
-      executor_playback_timer_->cancel();
-      executor_playback_timer_.reset();
-    }
     executor_next_message_.reset();
     executor_paused_ = false;
+    executor_end_of_bag_reached_ = false;
     is_in_playback_lk.unlock();
     complete_playback(0);
     return;
@@ -586,11 +523,6 @@ void Player::pause()
   clock_->pause();
   if (executor_playback_mode_ && is_in_playback_.load()) {
     executor_paused_ = true;
-    executor_pause_start_time_ = this->get_clock()->now().nanoseconds();
-    if (executor_playback_timer_) {
-      executor_playback_timer_->cancel();
-      executor_playback_timer_.reset();
-    }
   }
   RCLCPP_INFO_STREAM(get_logger(), "Pausing play.");
 }
@@ -599,15 +531,8 @@ void Player::resume()
 {
   clock_->resume();
   if (executor_playback_mode_ && is_in_playback_.load()) {
-    if (executor_paused_) {
-      const auto now_ns = this->get_clock()->now().nanoseconds();
-      executor_playback_start_time_ += (now_ns - executor_pause_start_time_);
-      executor_pause_start_time_ = 0;
-      executor_paused_ = false;
-    }
-    if (executor_next_message_) {
-      schedule_executor_playback();
-    } else if (!play_options_.loop) {
+    executor_paused_ = false;
+    if (!executor_next_message_ && !play_options_.loop && executor_end_of_bag_reached_) {
       complete_playback(0);
     }
   }
@@ -680,9 +605,12 @@ bool Player::play_next()
       return false;
     }
     clock_->jump(executor_next_message_->time_stamp);
+    publish_clock(executor_next_message_->time_stamp);
     const bool next_message_published = publish_message(executor_next_message_);
     if (next_message_published) {
-      read_next_executor_message();
+      if (!read_next_executor_message()) {
+        executor_end_of_bag_reached_ = true;
+      }
     }
     return next_message_published;
   }
@@ -749,25 +677,9 @@ void Player::seek(rcutils_time_point_value_t time_point)
       reader_->seek(time_point);
       clock_->jump(time_point);
     }
-    read_next_executor_message();
-
-    const auto now_ns = this->get_clock()->now().nanoseconds();
-    rcutils_time_point_value_t bag_delta_ns = time_point - starting_time_;
-    if (bag_delta_ns < 0) {
-      bag_delta_ns = 0;
-    }
-    executor_playback_start_time_ = now_ns - scale_bag_time_delta(bag_delta_ns);
-
-    if (executor_playback_timer_) {
-      executor_playback_timer_->cancel();
-      executor_playback_timer_.reset();
-    }
-    if (!clock_->is_paused()) {
-      if (executor_next_message_) {
-        schedule_executor_playback();
-      } else if (!play_options_.loop) {
-        complete_playback(0);
-      }
+    executor_end_of_bag_reached_ = false;
+    if (!read_next_executor_message()) {
+      executor_end_of_bag_reached_ = true;
     }
     return;
   }
@@ -893,19 +805,21 @@ void Player::prepare_publishers()
   reader_->set_filter(storage_filter);
 
   // Create /clock publisher
-  if (play_options_.clock_publish_frequency > 0.f) {
-    const auto publish_period = std::chrono::nanoseconds(
-      static_cast<uint64_t>(RCUTILS_S_TO_NS(1) / play_options_.clock_publish_frequency));
+  if (executor_playback_mode_ || play_options_.clock_publish_frequency > 0.f) {
     // NOTE: PlayerClock does not own this publisher because rosbag2_cpp
     // should not own transport-based functionality
     clock_publisher_ = create_publisher<rosgraph_msgs::msg::Clock>(
       "/clock", rclcpp::ClockQoS());
-    clock_publish_timer_ = create_wall_timer(
-      publish_period, [this]() {
-        auto msg = rosgraph_msgs::msg::Clock();
-        msg.clock = rclcpp::Time(clock_->now());
-        clock_publisher_->publish(msg);
-      });
+    if (!executor_playback_mode_ && play_options_.clock_publish_frequency > 0.f) {
+      const auto publish_period = std::chrono::nanoseconds(
+        static_cast<uint64_t>(RCUTILS_S_TO_NS(1) / play_options_.clock_publish_frequency));
+      clock_publish_timer_ = create_wall_timer(
+        publish_period, [this]() {
+          auto msg = rosgraph_msgs::msg::Clock();
+          msg.clock = rclcpp::Time(clock_->now());
+          clock_publisher_->publish(msg);
+        });
+    }
   }
 
   // Create topic publishers
@@ -973,6 +887,16 @@ void Player::prepare_publishers()
       split_event_pub_->publish(message);
     };
   reader_->add_event_callbacks(callbacks);
+}
+
+void Player::publish_clock(rcutils_time_point_value_t time_stamp)
+{
+  if (!clock_publisher_) {
+    return;
+  }
+  auto msg = rosgraph_msgs::msg::Clock();
+  msg.clock = rclcpp::Time(time_stamp, RCL_ROS_TIME);
+  clock_publisher_->publish(msg);
 }
 
 bool Player::publish_message(rosbag2_storage::SerializedBagMessageSharedPtr message)

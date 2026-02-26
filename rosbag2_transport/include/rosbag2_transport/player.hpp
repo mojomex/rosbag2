@@ -32,6 +32,7 @@
 #include "rclcpp/node.hpp"
 #include "rclcpp/publisher.hpp"
 #include "rclcpp/qos.hpp"
+#include "rslcpp/executor_idle_stepper.hpp"
 
 #include "rosbag2_cpp/clocks/player_clock.hpp"
 #include "rosbag2_interfaces/msg/read_split_event.hpp"
@@ -62,7 +63,7 @@ class Reader;
 
 namespace rosbag2_transport
 {
-class Player : public rclcpp::Node
+class Player : public rclcpp::Node, public rslcpp::ExecutorIdleStepper
 {
 public:
   /// \brief Type for callback functions.
@@ -167,6 +168,9 @@ public:
   ROSBAG2_TRANSPORT_PUBLIC
   bool wait_for_playback_to_finish(
     std::chrono::duration<double> timeout = std::chrono::seconds(-1));
+
+  ROSBAG2_TRANSPORT_PUBLIC
+  bool step_on_executor_idle(rclcpp::Time & sim_time) override;
 
   /// \brief Unpause if in pause mode, stop playback and exit from play.
   ROSBAG2_TRANSPORT_PUBLIC
@@ -296,12 +300,9 @@ private:
   void set_player_ready(bool ready);
   void complete_playback(std_msgs::msg::UInt8::_data_type exit_code = 0);
   bool read_next_executor_message();
-  rcutils_time_point_value_t scale_bag_time_delta(
-    rcutils_time_point_value_t bag_delta_ns) const;
-  rcutils_time_point_value_t scheduled_time_for_bag_timestamp(
-    rcutils_time_point_value_t bag_timestamp_ns) const;
   void start_executor_playback(const rclcpp::Duration & delay);
-  void schedule_executor_playback();
+  bool step_executor_playback(rclcpp::Time & sim_time);
+  void publish_clock(rcutils_time_point_value_t time_stamp);
 
   rosbag2_storage::StorageOptions storage_options_;
   rosbag2_transport::PlayOptions play_options_;
@@ -338,11 +339,9 @@ private:
   std::atomic_bool player_ready_state_{false};
   rclcpp::Publisher<rosbag2_interfaces::msg::ReadSplitEvent>::SharedPtr split_event_pub_;
   bool executor_playback_mode_{false};
-  std::shared_ptr<rclcpp::TimerBase> executor_playback_timer_;
   rosbag2_storage::SerializedBagMessageSharedPtr executor_next_message_{};
-  rcutils_time_point_value_t executor_playback_start_time_{0};
-  rcutils_time_point_value_t executor_pause_start_time_{0};
   bool executor_paused_{false};
+  bool executor_end_of_bag_reached_{false};
 
   // defaults
   std::shared_ptr<KeyboardHandler> keyboard_handler_;

@@ -29,6 +29,7 @@ find_package(rclcpp REQUIRED)
 find_package(rclcpp_components REQUIRED)
 find_package(rcutils REQUIRED)
 find_package(rmw REQUIRED)
+find_package(rslcpp REQUIRED)
 find_package(rosbag2_compression REQUIRED)
 find_package(rosbag2_cpp REQUIRED)
 find_package(rosbag2_interfaces REQUIRED)
@@ -59,6 +60,7 @@ ament_target_dependencies(${PROJECT_NAME}
   rclcpp_components
   rcutils
   rmw
+  rslcpp
   rosbag2_compression
   rosbag2_cpp
   rosbag2_interfaces
@@ -101,6 +103,7 @@ ament_export_targets(export_${PROJECT_NAME})
 ament_export_dependencies(
   rclcpp_components
   keyboard_handler
+  rslcpp
   rosbag2_cpp
   rosbag2_compression
   rosbag2_interfaces

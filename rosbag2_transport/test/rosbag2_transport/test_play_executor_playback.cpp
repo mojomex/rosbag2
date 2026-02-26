@@ -17,6 +17,7 @@
 #include <chrono>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "rclcpp/rclcpp.hpp"
 #include "rmw/rmw.h"
@@ -93,23 +94,48 @@ TEST_F(PlayExecutorPlaybackTest, executor_playback_requires_executor_spinning)
 
   rosbag2_transport::PlayOptions play_options;
   play_options.executor_playback = true;
-  play_options.delay = rclcpp::Duration(0, 20 * 1000 * 1000);
 
   auto player = std::make_shared<rosbag2_transport::Player>(storage_options, play_options);
 
-  ASSERT_TRUE(player->play());
-  EXPECT_FALSE(player->wait_for_playback_to_finish(50ms));
+  std::vector<int32_t> received_values;
+  auto listener = std::make_shared<rclcpp::Node>("executor_playback_listener");
+  auto sub = listener->create_subscription<test_msgs::msg::BasicTypes>(
+    "topic1", rclcpp::QoS(10),
+    [&received_values](const test_msgs::msg::BasicTypes::SharedPtr msg) {
+      received_values.push_back(msg->int32_value);
+    });
+  (void)sub;
 
+  ASSERT_TRUE(player->play());
   rclcpp::executors::SingleThreadedExecutor executor;
   executor.add_node(player);
+  executor.add_node(listener);
 
-  const auto deadline = std::chrono::steady_clock::now() + 2s;
-  while (std::chrono::steady_clock::now() < deadline &&
-    !player->wait_for_playback_to_finish(0s))
-  {
-    executor.spin_some(20ms);
-  }
+  executor.spin_some(20ms);
+  EXPECT_TRUE(received_values.empty());
+  EXPECT_FALSE(player->wait_for_playback_to_finish(20ms));
+
+  auto stepper = std::dynamic_pointer_cast<rslcpp::ExecutorIdleStepper>(player);
+  ASSERT_NE(stepper, nullptr);
+
+  rclcpp::Time sim_time(0, 0, RCL_ROS_TIME);
+  ASSERT_TRUE(stepper->step_on_executor_idle(sim_time));
+  EXPECT_EQ(sim_time.nanoseconds(), 0);
+  executor.spin_some(20ms);
+  ASSERT_EQ(received_values.size(), 1u);
+  EXPECT_EQ(received_values[0], 1);
+  EXPECT_FALSE(player->wait_for_playback_to_finish(20ms));
+
+  ASSERT_TRUE(stepper->step_on_executor_idle(sim_time));
+  EXPECT_EQ(sim_time.nanoseconds(), 1'000'000);
+  executor.spin_some(20ms);
+  ASSERT_EQ(received_values.size(), 2u);
+  EXPECT_EQ(received_values[1], 2);
+  EXPECT_FALSE(player->wait_for_playback_to_finish(20ms));
+
+  EXPECT_FALSE(stepper->step_on_executor_idle(sim_time));
 
   EXPECT_TRUE(player->wait_for_playback_to_finish(0s));
+  executor.remove_node(listener);
   executor.remove_node(player);
 }

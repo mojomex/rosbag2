@@ -22,6 +22,7 @@
   <depend>std_msgs</depend>
   <depend>std_srvs</depend>
   <depend>rmw</depend>
+  <depend>rslcpp</depend>
   <depend>shared_queues_vendor</depend>
   <depend>yaml_cpp_vendor</depend>
   <depend>keyboard_handler</depend>
