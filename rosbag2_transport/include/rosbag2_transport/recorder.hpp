@@ -202,6 +202,9 @@ private:
   rclcpp::Service<rosbag2_interfaces::srv::Snapshot>::SharedPtr srv_snapshot_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_start_recording_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_stop_recording_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_is_discovery_complete_;
+  std::atomic<bool> discovery_complete_ = false;
+  std::atomic<bool> discovery_ready_for_playback_ = false;
   std::atomic<bool> paused_ = false;
   std::atomic<bool> is_recording_ = false;
 

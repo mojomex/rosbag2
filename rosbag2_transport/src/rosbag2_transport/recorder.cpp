@@ -165,17 +165,12 @@ void Recorder::stop()
   if (!is_recording_.load()) {
     return;  // We are not in recording and therefore shall not do stop operation.
   }
+  paused_ = true;
   stop_discovery_ = true;
   if (discovery_future_.valid()) {
-    auto status = discovery_future_.wait_for(2 * record_options_.topic_polling_interval);
-    if (status != std::future_status::ready) {
-      RCLCPP_ERROR_STREAM(
-        get_logger(),
-        "discovery_future_.wait_for(" << record_options_.topic_polling_interval.count() <<
-          ") return status: " << (status == std::future_status::timeout ? "timeout" : "deferred"));
-    }
+    discovery_future_.wait();
+    discovery_future_.get();
   }
-  paused_ = true;
   subscriptions_.clear();
   writer_->close();  // Call writer->close() to finalize current bag file and write metadata
 
@@ -199,6 +194,8 @@ void Recorder::record()
   }
   event_publisher_thread_should_exit_ = false;
   stop_discovery_ = record_options_.is_discovery_disabled;
+  discovery_complete_ = record_options_.is_discovery_disabled || record_options_.topics.empty();
+  discovery_ready_for_playback_ = discovery_complete_.load();
   paused_ = record_options_.start_paused;
   topic_qos_profile_overrides_ = record_options_.topic_qos_profile_overrides;
   if (record_options_.rmw_serialization_format.empty()) {
@@ -303,6 +300,18 @@ void Recorder::create_control_services()
         response->message = e.what();
       }
     });
+
+  srv_is_discovery_complete_ = create_service<std_srvs::srv::Trigger>(
+    "~/is_discovery_complete",
+    [this](
+      std_srvs::srv::Trigger::Request::ConstSharedPtr,
+      std_srvs::srv::Trigger::Response::SharedPtr response)
+    {
+      response->success = discovery_complete_.load() || discovery_ready_for_playback_.load();
+      response->message = response->success ?
+        "Topic discovery reached playback-ready state." :
+        "Topic discovery running.";
+    });
 }
 
 void Recorder::event_publisher_thread_main()
@@ -395,6 +404,9 @@ void Recorder::topics_discovery()
         warn_if_new_qos_for_subscribed_topic(topic_and_type.first);
       }
       auto missing_topics = get_missing_topics(topics_to_subscribe);
+      const bool all_currently_available_topics_subscribed =
+        !topics_to_subscribe.empty() && missing_topics.empty();
+      discovery_ready_for_playback_ = all_currently_available_topics_subscribed;
       subscribe_topics(missing_topics);
 
       if (!record_options_.topics.empty() &&
@@ -403,6 +415,8 @@ void Recorder::topics_discovery()
         RCLCPP_INFO(
           get_logger(),
           "All requested topics are subscribed. Stopping discovery...");
+        discovery_ready_for_playback_ = true;
+        discovery_complete_ = true;
         return;
       }
     } catch (const std::exception & e) {
